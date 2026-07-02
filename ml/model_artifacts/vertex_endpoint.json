@@ -1,0 +1,8 @@
+{
+  "endpoint_id": "1972638759195246592",
+  "endpoint_name": "projects/676120514395/locations/us-central1/endpoints/1972638759195246592",
+  "model_id": "279241318838829056",
+  "model_uri": "gs://project-0ef73ac4-7a69-455a-987-wealthwise/models/risk-model-v1/",
+  "region": "us-central1",
+  "project": "project-0ef73ac4-7a69-455a-987"
+}

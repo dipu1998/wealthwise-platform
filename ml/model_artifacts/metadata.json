@@ -1,0 +1,23 @@
+{
+  "model_type": "RandomForestClassifier",
+  "features": [
+    "equity_pct",
+    "debt_pct",
+    "gold_pct",
+    "total_num_funds",
+    "years_invested",
+    "aum_lakh",
+    "age_group_encoded"
+  ],
+  "classes": [
+    "Aggressive",
+    "Conservative",
+    "Moderate"
+  ],
+  "n_estimators": 100,
+  "max_depth": 10,
+  "accuracy": 0.7951,
+  "f1_score": 0.7977,
+  "training_rows": 39760,
+  "test_rows": 9941
+}

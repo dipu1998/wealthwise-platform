@@ -1,0 +1,259 @@
+# =============================================================
+# FILE: .github/workflows/deploy.yml
+#
+# WHAT IS CI/CD?
+#   CI = Continuous Integration
+#      Every time you push code → automatically test it
+#      Catches bugs before they reach production
+#
+#   CD = Continuous Deployment
+#      Every time tests pass → automatically deploy
+#      No manual deployment steps → faster releases → less human error
+#
+# WITHOUT CI/CD (old way):
+#   Developer writes code → manually tests on laptop →
+#   manually builds Docker image → manually pushes to GCR →
+#   manually deploys to Cloud Run → hopes nothing broke
+#   Time: 30-45 minutes per deployment
+#   Risk: human error at every step
+#
+# WITH CI/CD (our way):
+#   Developer pushes code to GitHub → everything else automatic
+#   Time: 5-8 minutes
+#   Risk: near zero (same steps every time)
+#
+# COMPANY USE CASE:
+#   WealthWise has 10 developers. Each pushes code 3x per day.
+#   Without CI/CD: 30 manual deployments per day = chaos
+#   With CI/CD: push code → go for coffee → production updated
+#
+# GITHUB ACTIONS:
+#   GitHub's built-in CI/CD system
+#   Free for public repos, 2000 minutes/month free for private
+#   Runs on GitHub's servers (no infrastructure to manage)
+#   Triggered by: push, pull_request, schedule, manual
+# =============================================================
+
+name: WealthWise Portfolio API — Build and Deploy
+
+# WHEN DOES THIS WORKFLOW RUN?
+# on: defines the trigger
+on:
+  push:
+    branches:
+      - main          # only trigger on pushes to main branch
+    paths:
+      - 'services/portfolio_api/**'  # only trigger if these files changed
+      # WHY PATH FILTER?
+      # If you change a Spark script, no need to redeploy the API
+      # Only redeploy when API code actually changes
+      # Saves CI/CD minutes and avoids unnecessary deployments
+
+  # Allow manual trigger from GitHub UI
+  # Useful for: force redeployment without code change
+  workflow_dispatch:
+
+# ENVIRONMENT VARIABLES
+# Available to all jobs in this workflow
+env:
+  PROJECT_ID:   project-0ef73ac4-7a69-455a-987
+  REGION:       us-central1
+  SERVICE_NAME: portfolio-api
+  IMAGE_NAME:   gcr.io/project-0ef73ac4-7a69-455a-987/wealthwise-portfolio-api
+
+# JOBS = the actual work
+# Multiple jobs can run in parallel or in sequence
+jobs:
+
+  # ── JOB 1: TEST ───────────────────────────────────────────
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    # runs-on = which machine to use
+    # ubuntu-latest = GitHub provides a fresh Ubuntu VM
+    # Each job gets a clean VM — no leftover state from previous runs
+
+    steps:
+    # Step 1: Get the code
+    - name: Checkout code
+      uses: actions/checkout@v4
+      # "uses" = use a pre-built action from GitHub marketplace
+      # actions/checkout = downloads your repo code to the VM
+      # Without this: VM has no code to test
+
+    # Step 2: Set up Python
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+        cache: "pip"
+        # cache: "pip" = cache downloaded packages
+        # Second run: skips downloading, uses cache = 2x faster
+
+    # Step 3: Install dependencies
+    - name: Install dependencies
+      run: |
+        pip install fastapi uvicorn pydantic pytest httpx
+        # httpx = async HTTP client used by FastAPI test client
+
+    # Step 4: Run tests
+    - name: Run unit tests
+      run: |
+        pytest services/portfolio_api/tests/ -v
+        # -v = verbose output (show each test name)
+        # If any test fails → job fails → deployment blocked
+        # This is the GATE that prevents bad code reaching production
+
+  # ── JOB 2: BUILD AND DEPLOY ───────────────────────────────
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    needs: test
+    # needs: test = this job only runs AFTER test job passes
+    # If tests fail → deploy never runs → production stays safe
+
+    # Only deploy from main branch
+    if: github.ref == 'refs/heads/main'
+    # github.ref = the branch that triggered this workflow
+    # Prevents deploying from feature branches accidentally
+
+    steps:
+    # Step 1: Get the code
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # Step 2: Authenticate with Google Cloud
+    # This is the most important security step
+    # We use Workload Identity Federation — NO service account keys
+    #
+    # OLD WAY (insecure):
+    #   Download a JSON key file → store in GitHub secrets
+    #   Risk: key file can be leaked, stolen, forgotten to rotate
+    #
+    # NEW WAY (Workload Identity Federation):
+    #   GitHub proves its identity to GCP using OIDC tokens
+    #   GCP trusts GitHub directly — no key file needed
+    #   Token expires in minutes — can't be stolen and reused
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+        service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+        # secrets.WIF_PROVIDER = stored in GitHub repo secrets
+        # Never hardcode credentials in code files
+
+    # Step 3: Set up gcloud CLI
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    # Step 4: Configure Docker to use GCR
+    - name: Configure Docker for GCR
+      run: gcloud auth configure-docker --quiet
+
+    # Step 5: Build Docker image
+    - name: Build Docker image
+      run: |
+        docker build \
+          -t ${{ env.IMAGE_NAME }}:${{ github.sha }} \
+          -t ${{ env.IMAGE_NAME }}:latest \
+          services/portfolio_api/
+        # github.sha = unique commit hash (e.g. "a3f9b2c1...")
+        # Tag with BOTH commit hash AND "latest"
+        # Commit hash tag = immutable, for audit trail
+        # latest tag = always points to newest version
+        #
+        # WHY TAG WITH COMMIT HASH?
+        # "latest" is mutable — points to different image over time
+        # "a3f9b2c1" is immutable — always this exact version
+        # If production breaks → rollback: deploy "a3f9b2c1" again
+        # Exact same image, guaranteed
+
+    # Step 6: Security scan with Trivy
+    # Trivy scans the Docker image for known vulnerabilities
+    # CVEs = Common Vulnerabilities and Exposures
+    # e.g. "This version of OpenSSL has a critical security hole"
+    #
+    # COMPANY USE CASE:
+    # SEBI/RBI requires FinTech companies to prove their software
+    # has no critical security vulnerabilities
+    # Trivy scan report = evidence for compliance audit
+    - name: Scan image for vulnerabilities (Trivy)
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+        format: table
+        exit-code: '0'
+        # exit-code: '0' = don't fail pipeline on vulnerabilities
+        # In production: use '1' to block deployment on CRITICAL vulns
+        severity: 'CRITICAL,HIGH'
+        # Only report CRITICAL and HIGH severity issues
+        # LOW/MEDIUM = informational, don't block deployment
+
+    # Step 7: Push image to GCR
+    - name: Push Docker image to GCR
+      run: |
+        docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}
+        docker push ${{ env.IMAGE_NAME }}:latest
+
+    # Step 8: Deploy to Cloud Run
+    - name: Deploy to Cloud Run
+      run: |
+        gcloud run deploy ${{ env.SERVICE_NAME }} \
+          --image=${{ env.IMAGE_NAME }}:${{ github.sha }} \
+          --platform=managed \
+          --region=${{ env.REGION }} \
+          --allow-unauthenticated \
+          --port=8000 \
+          --memory=512Mi \
+          --cpu=1 \
+          --min-instances=0 \
+          --max-instances=3 \
+          --set-env-vars="PROJECT_ID=${{ env.PROJECT_ID }},ENDPOINT_ID=1972638759195246592,REGION=${{ env.REGION }}" \
+          --project=${{ env.PROJECT_ID }}
+        # Uses commit SHA tag (not latest) for exact version tracking
+
+    # Step 9: Verify deployment
+    - name: Verify deployment
+      run: |
+        SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --project=${{ env.PROJECT_ID }} \
+          --format='value(status.url)')
+
+        echo "Service URL: ${SERVICE_URL}"
+
+        # Wait for service to be ready
+        sleep 10
+
+        # Health check
+        RESPONSE=$(curl -s "${SERVICE_URL}/health")
+        echo "Health check response: ${RESPONSE}"
+
+        # Verify status is healthy
+        echo ${RESPONSE} | grep -q "healthy" && \
+          echo "Deployment verified successfully!" || \
+          echo "Health check failed — investigate logs"
+
+  # ── JOB 3: NOTIFY ─────────────────────────────────────────
+  notify:
+    name: Notify Team
+    runs-on: ubuntu-latest
+    needs: [test, deploy]
+    if: always()
+    # always() = run this job even if previous jobs failed
+    # We always want to notify the team — success OR failure
+
+    steps:
+    - name: Deployment notification
+      run: |
+        if [ "${{ needs.deploy.result }}" == "success" ]; then
+          echo "✅ Deployment successful!"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "By: ${{ github.actor }}"
+          # In production: send Slack message, email, PagerDuty alert
+        else
+          echo "❌ Deployment failed!"
+          echo "Check logs: ${{ github.server_url }}/${{ github.repository }}/actions"
+          # In production: page on-call engineer immediately
+        fi
