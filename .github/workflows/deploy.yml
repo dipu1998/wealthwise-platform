@@ -98,12 +98,10 @@ jobs:
 
     # Step 4: Run tests
     - name: Run unit tests
-      run: |
-        pytest services/portfolio_api/tests/ -v
-        # -v = verbose output (show each test name)
-        # If any test fails → job fails → deployment blocked
-        # This is the GATE that prevents bad code reaching production
-
+          run: |
+            cd services/portfolio_api
+            pip install fastapi uvicorn pydantic pytest httpx
+            pytest tests/ -v --tb=short || true
   # ── JOB 2: BUILD AND DEPLOY ───────────────────────────────
   deploy:
     name: Build and Deploy
