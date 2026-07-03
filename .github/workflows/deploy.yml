@@ -98,10 +98,10 @@ jobs:
 
     # Step 4: Run tests
     - name: Run unit tests
-          run: |
-            cd services/portfolio_api
-            pip install fastapi uvicorn pydantic pytest httpx
-            pytest tests/ -v --tb=short || true
+      run: |
+        cd services/portfolio_api
+        pip install fastapi uvicorn pydantic pytest httpx
+        pytest tests/ -v --tb=short || true
   # ── JOB 2: BUILD AND DEPLOY ───────────────────────────────
   deploy:
     name: Build and Deploy
