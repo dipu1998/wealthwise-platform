@@ -107,18 +107,15 @@ jobs:
     name: Build and Deploy
     runs-on: ubuntu-latest
     needs: test
-    # needs: test = this job only runs AFTER test job passes
-    # If tests fail → deploy never runs → production stays safe
-
-    # Only deploy from main branch
     if: github.ref == 'refs/heads/main'
-    # github.ref = the branch that triggered this workflow
-    # Prevents deploying from feature branches accidentally
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
-    # Step 1: Get the code
     - name: Checkout code
       uses: actions/checkout@v4
+
 
     # Step 2: Authenticate with Google Cloud
     # This is the most important security step
